@@ -1,0 +1,5 @@
+{
+  "dependencies": {
+    "@exptech/http": "github:ExpTechTW/exptech-sdk-http#0.0.4"
+  }
+}
