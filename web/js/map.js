@@ -168,6 +168,7 @@ if (toggleButton) {
 
 const toggleTremButton = document.getElementById('toggle-trem');
 let tremVisible = false;
+window.tremVisible = false;
 
 function updateTremButton() {
     toggleTremButton.innerHTML = tremVisible ? `
@@ -190,6 +191,7 @@ let tremStationPopup = null;
 
 toggleTremButton.addEventListener('click', () => {
     tremVisible = !tremVisible;
+    window.tremVisible = tremVisible;
     const visibility = tremVisible ? 'visible' : 'none';
 
     if (map.getLayer('report-markers-trem')) map.setLayoutProperty('report-markers-trem', 'visibility', visibility);
@@ -463,7 +465,17 @@ map.on('load', function () {
         if (crossMarkersPopup) {
             crossMarkersPopup.remove();
         }
-        crossMarkersPopup = createPopup(e, `<div style="color: #fff;"><b>震央資訊</b><br>位置: ${p.loc}<br>規模: M${p.mag || 0}<br>深度: ${p.depth || 0}km<br>時間: ${formatTime(p.time)}</div>`);
+        crossMarkersPopup = createPopup(e, `
+            <div style="color: #fff;">
+                <b>震央資訊</b><br>
+                位置: ${p.loc}<br>
+                規模: M${p.mag || 0}<br>
+                深度: ${p.depth || 0}km<br>
+                時間: ${formatTime(p.time)}<br>
+                CWA測站最大震度: ${p.max_int} ${p.max_loc == '不明' ? '' : p.max_loc}<br>
+                ${tremVisible ? `TREM測站最大震度: ${p.max_trem_int} ${p.max_trem_loc == '不明' ? '' : p.max_trem_loc}<br></div>` : ''}
+            </div>`
+        );
     });
 
     map.on('click', 'report-markers-trem', (e) => {
@@ -563,6 +575,12 @@ window.showReportPoint = (data, autoCenter = true) => {
     };
 
     const dataList = [];
+    let max_int = 0;
+    let max_dist = Infinity;
+    let max_trem_int = 0;
+    let max_trem_dist = Infinity;
+    let max_loc = null;
+    let max_trem_loc = null;
 
     // 處理震度分佈 (data.list 結構: city -> town -> info)
     if (data.list) {
@@ -570,8 +588,18 @@ window.showReportPoint = (data, autoCenter = true) => {
             for (const town of Object.keys(data.list[city].town)) {
                 const info = data.list[city].town[town];
                 let dist = 0;
+                let distNum = Infinity;
                 if (data.lat && data.lon) {
-                    dist = twoPointDistance(center, { lat: info.lat, lon: info.lon }).toFixed(2);
+                    distNum = twoPointDistance(center, { lat: info.lat, lon: info.lon });
+                    dist = distNum.toFixed(2);
+                }
+                if (parseInt(info.int) > max_int) {
+                    max_loc = { city, town };
+                    max_int = parseInt(info.int);
+                    max_dist = distNum;
+                } else if (parseInt(info.int) === max_int && distNum < max_dist) {
+                    max_loc = { city, town };
+                    max_dist = distNum;
                 }
                 dataList.push({
                     type: 'Feature',
@@ -585,27 +613,6 @@ window.showReportPoint = (data, autoCenter = true) => {
                     },
                 });
             }
-        }
-    }
-
-    // 處理震央
-    if (data.lon && data.lat) {
-        dataList.push({
-            type: 'Feature',
-            geometry: { type: 'Point', coordinates: [data.lon, data.lat] },
-            properties: {
-                type: 'epicenter',
-                i: 0,
-                loc: data.loc,
-                mag: data.mag,
-                depth: data.depth,
-                time: data.time,
-                lon: data.lon,
-                lat: data.lat,
-            },
-        });
-        if (autoCenter) {
-            map.flyTo({ center: [data.lon, data.lat], zoom: 7.5 });
         }
     }
 
@@ -651,11 +658,22 @@ window.showReportPoint = (data, autoCenter = true) => {
     // 處理 TREM 測站
     if (data.trem_stations && Array.isArray(data.trem_stations)) {
         data.trem_stations.forEach(station => {
+            const val = window.intensity_float_to_int(station.i);
+            let dist = 0;
+            let distNum = Infinity;
+            if (station.lat && station.lon && data.lat && data.lon) {
+                distNum = twoPointDistance(center, { lat: station.lat, lon: station.lon });
+                dist = distNum.toFixed(2);
+            }
+            if (val > max_trem_int) {
+                max_trem_int = val;
+                max_trem_loc = { city: station.loc.city, town: station.loc.town };
+                max_trem_dist = distNum;
+            } else if (val === max_trem_int && distNum < max_trem_dist) {
+                max_trem_loc = { city: station.loc.city, town: station.loc.town };
+                max_trem_dist = distNum;
+            }
             if (station.lat && station.lon) {
-                let dist = 0;
-                if (data.lat && data.lon) {
-                    dist = twoPointDistance(center, { lat: station.lat, lon: station.lon }).toFixed(2);
-                }
                 station.int = window.intensity_float_to_int(station.i);
                 dataList.push({
                     type: 'Feature',
@@ -677,6 +695,31 @@ window.showReportPoint = (data, autoCenter = true) => {
                 });
             }
         });
+    }
+
+    // 處理震央
+    if (data.lon && data.lat) {
+        dataList.push({
+            type: 'Feature',
+            geometry: { type: 'Point', coordinates: [data.lon, data.lat] },
+            properties: {
+                type: 'epicenter',
+                i: 0,
+                loc: data.loc,
+                mag: data.mag,
+                depth: data.depth,
+                time: data.time,
+                lon: data.lon,
+                lat: data.lat,
+                max_int: max_int ? int_to_intensity(max_int) : "不明",
+                max_trem_int: max_trem_int ? int_to_intensity(max_trem_int) : "不明",
+                max_loc: max_loc ? `${max_loc.city} ${max_loc.town}` : "不明",
+                max_trem_loc: max_trem_loc ? `${max_trem_loc.city} ${max_trem_loc.town}` : "不明",
+            },
+        });
+        if (autoCenter) {
+            map.flyTo({ center: [data.lon, data.lat], zoom: 7.5 });
+        }
     }
 
     map.getSource('report-markers-geojson').setData({

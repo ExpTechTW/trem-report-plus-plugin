@@ -261,6 +261,7 @@ async function fetchTremData() {
             }
         });
         await Promise.all(promises);
+        renderList();
         if (currentReportId) {
             const report = reports.find(r => r.id === currentReportId);
             if (report) {
@@ -321,21 +322,25 @@ function renderList() {
         const card = document.createElement('div');
         card.className = `report-card ${report.id === currentReportId ? 'active' : ''}`;
 
+        const tremTag = report.trem ? '<span style="background-color: #4dabf5; color: white; padding: 2px 6px; border-radius: 4px; font-size: 12px; margin-left: 8px; vertical-align: middle;">TREM</span>' : '';
+
         card.innerHTML = `
             <div class="report-time">${formatTime(report.time)}</div>
             <div class="report-info">
                 <div class="report-intensity ${getIntensityClass(report.int)}">${report.int || 0}</div>
                 <div class="report-details">
-                    <div class="report-location">${report.loc || '未知地點'}</div>
+                    <div class="report-location">${report.loc || '未知地點'}${window.tremVisible ? tremTag : ''}</div>
                     <div class="report-mag-depth">M${report.mag || 0} / ${report.depth || 0}km</div>
                 </div>
             </div>
         `;
 
         card.addEventListener('click', () => {
-            wrapper.classList.add('collapsed');
+            wrapper.classList.toggle('collapsed');
+            toggleBtn.innerHTML = wrapper.classList.contains('collapsed') ?
+                `<svg xmlns="http://www.w3.org/2000/svg" height="24px" viewBox="0 -960 960 960" width="24px" fill="#e3e3e3"><path d="M504-480 320-664l56-56 240 240-240 240-56-56 184-184Z"/></svg>` :
+                `<svg xmlns="http://www.w3.org/2000/svg" height="24px" viewBox="0 -960 960 960" width="24px" fill="#e3e3e3"><path d="M560-240 320-480l240-240 56 56-184 184 184 184-56 56Z"/></svg>`;
             currentReportId = report.id;
-            renderList();
             fetchTremData();
         });
 
@@ -356,7 +361,6 @@ ipcRenderer.on('report-plus-data', (event, data) => {
             currentReportId = data.id;
         }
     }
-    renderList();
     fetchTremData();
     console.log(reports);
 });
