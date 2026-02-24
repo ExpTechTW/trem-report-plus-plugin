@@ -221,10 +221,36 @@ function getIntensityClass(intVal) {
 
 async function fetchTremData() {
     try {
-        const response = await fetch('https://api-1.exptech.dev/api/v1/trem/list');
-        const tremList = await response.json();
+        const requests = [fetch('https://api-1.exptech.dev/api/v1/trem/list').then(r => r.json()).catch(() => [])];
+
+        if (reports.length > 0) {
+            const minTime = reports.reduce((min, p) => p.time < min ? p.time : min, reports[0].time);
+            const date = new Date(minTime);
+            const monthValue = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`;
+            requests.push(fetch(`https://api-1.exptech.dev/api/v1/trem/month/${monthValue}`).then(r => r.json()).catch(() => []));
+        }
+
+        const results = await Promise.all(requests);
+        const tremMap = new Map();
+        results.forEach(list => {
+            if (Array.isArray(list)) {
+                list.forEach(item => {
+                    if (item && item.ID) tremMap.set(item.ID, item);
+                });
+            }
+        });
+        const tremList = Array.from(tremMap.values());
+
         const promises = reports.map(async (report) => {
-            const match = tremList.find(item => item.Cwa_id === report.id);
+            let match = tremList.find(item => item.Cwa_id === report.id);
+            if (!match) {
+                match = tremList.find(item => {
+                    const timeDiff = Math.abs(Number(item.ID) - report.time);
+                    const latDiff = Math.abs(item.Lat - report.lat);
+                    const lonDiff = Math.abs(item.Lon - report.lon);
+                    return timeDiff <= 120000 && latDiff <= 0.5 && lonDiff <= 0.5;
+                });
+            }
             if (match) {
                 report.trem = match.ID;
                 report.trem_list = match.List;
