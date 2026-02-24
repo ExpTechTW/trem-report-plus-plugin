@@ -107,21 +107,36 @@ let layerVisible = false;
 function loadConfig() {
     try {
         const savedConfig = localStorage.getItem('mapConfig');
-        return savedConfig ? JSON.parse(savedConfig) : { layers: { town_outline: { visible: false } } };
+        const config = savedConfig ? JSON.parse(savedConfig) : {};
+        if (!config.layers) config.layers = {};
+        if (!config.layers.town_outline) config.layers.town_outline = { visible: false };
+        if (!config.trem) config.trem = { visible: false };
+        return config;
     } catch (error) {
         console.error('無法載入設定:', error);
-        return { layers: { town_outline: { visible: false } } };
+        return { layers: { town_outline: { visible: false } }, trem: { visible: false } };
     }
 }
 
-function saveConfig(config) {
+function saveConfig() {
+    const config = {
+        layers: {
+            town_outline: {
+                visible: layerVisible
+            }
+        },
+        trem: {
+            visible: tremVisible
+        }
+    };
     try {
         localStorage.setItem('mapConfig', JSON.stringify(config));
-        console.log(config);
     } catch (error) {
         console.error('無法儲存設定:', error);
     }
 }
+
+layerVisible = loadConfig().layers.town_outline.visible;
 
 if (toggleButton) {
     toggleButton.addEventListener('click', () => {
@@ -146,13 +161,7 @@ if (toggleButton) {
             }
         }
 
-        saveConfig({
-            layers: {
-                town_outline: {
-                    visible: layerVisible
-                }
-            }
-        });
+        saveConfig();
 
         toggleButton.innerHTML = layerVisible ? `
             <svg xmlns="http://www.w3.org/2000/svg" height="24px" viewBox="0 -960 960 960" width="24px" fill="#e3e3e3">
@@ -167,8 +176,8 @@ if (toggleButton) {
 }
 
 const toggleTremButton = document.getElementById('toggle-trem');
-let tremVisible = false;
-window.tremVisible = false;
+let tremVisible = loadConfig().trem.visible;
+window.tremVisible = tremVisible;
 
 function updateTremButton() {
     toggleTremButton.innerHTML = tremVisible ? `
@@ -200,6 +209,7 @@ toggleTremButton.addEventListener('click', () => {
     if (tremMarkersPopup) tremMarkersPopup.remove();
     if (tremStationPopup) tremStationPopup.remove();
 
+    saveConfig();
     updateTremButton();
 });
 
@@ -373,7 +383,7 @@ map.on('load', function () {
             ],
             'icon-allow-overlap': true,
             'icon-ignore-placement': true,
-            'visibility': 'none',
+            'visibility': tremVisible ? 'visible' : 'none',
         },
     });
 
@@ -384,7 +394,7 @@ map.on('load', function () {
         source: 'report-markers-geojson',
         filter: ['==', ['get', 'type'], 'trem-station'],
         layout: {
-            'visibility': 'none',
+            'visibility': tremVisible ? 'visible' : 'none',
         },
         paint: {
             'circle-radius': [
@@ -419,7 +429,7 @@ map.on('load', function () {
             'text-field': ['to-string', ['get', 'int']],
             'text-size': 12,
             'text-allow-overlap': true,
-            'visibility': 'none',
+            'visibility': tremVisible ? 'visible' : 'none',
         },
         paint: {
             'text-color': [
@@ -509,11 +519,19 @@ map.on('load', function () {
     });
 
     map.on('click', 'report-markers-trem-station', (e) => {
-        const coords = e.features[0].geometry.coordinates;
-        const features = e.features.filter(f => f.geometry.coordinates[0] === coords[0] && f.geometry.coordinates[1] === coords[1]);
+        const p = e.features[0].properties;
+        let features = [];
+        if (p.station_list) {
+            try {
+                features = JSON.parse(p.station_list);
+                features.sort((a, b) => b.i - a.i);
+            } catch (e) { features = [p]; }
+        } else {
+            features = [p];
+        }
+
         let content = '';
-        features.forEach((feature, index) => {
-            const p = feature.properties;
+        features.forEach((p, index) => {
             const borderStyle = index < features.length - 1 ? 'border-bottom: 1px solid #555; padding-bottom: 5px; margin-bottom: 5px;' : '';
             content += `
             <div style="color: #fff; ${borderStyle}">
@@ -657,6 +675,7 @@ window.showReportPoint = (data, autoCenter = true) => {
 
     // 處理 TREM 測站
     if (data.trem_stations && Array.isArray(data.trem_stations)) {
+        const stationMap = new Map();
         data.trem_stations.forEach(station => {
             const val = window.intensity_float_to_int(station.i);
             let dist = 0;
@@ -675,25 +694,52 @@ window.showReportPoint = (data, autoCenter = true) => {
             }
             if (station.lat && station.lon) {
                 station.int = window.intensity_float_to_int(station.i);
-                dataList.push({
-                    type: 'Feature',
-                    geometry: { type: 'Point', coordinates: [station.lon, station.lat] },
-                    properties: {
-                        type: 'trem-station',
-                        i: station.i,
-                        int: station.int,
-                        id: station.id,
-                        name: station.name,
-                        pga: station.pga,
-                        pgv: station.pgv,
-                        lpgm: station.lpgm,
-                        dist: dist,
-                        city: station.loc.city,
-                        town: station.loc.town,
-                        net: station.net,
-                    },
-                });
+                const key = `${station.lat},${station.lon}`;
+                if (!stationMap.has(key)) {
+                    stationMap.set(key, { station, dist, list: [station] });
+                } else {
+                    const entry = stationMap.get(key);
+                    entry.list.push(station);
+                    if (station.i > entry.station.i) {
+                        entry.station = station;
+                        entry.dist = dist;
+                    }
+                }
             }
+        });
+
+        stationMap.forEach(({ station, dist, list }) => {
+            dataList.push({
+                type: 'Feature',
+                geometry: { type: 'Point', coordinates: [station.lon, station.lat] },
+                properties: {
+                    type: 'trem-station',
+                    i: station.i,
+                    int: station.int,
+                    id: station.id,
+                    name: station.name,
+                    pga: station.pga,
+                    pgv: station.pgv,
+                    lpgm: station.lpgm,
+                    dist: dist,
+                    city: station.loc.city,
+                    town: station.loc.town,
+                    net: station.net,
+                    station_list: JSON.stringify(list.map(s => ({
+                        id: s.id,
+                        name: s.name,
+                        i: s.i,
+                        int: s.int,
+                        pga: s.pga,
+                        pgv: s.pgv,
+                        lpgm: s.lpgm,
+                        net: s.net,
+                        city: s.loc ? s.loc.city : '',
+                        town: s.loc ? s.loc.town : '',
+                        dist: dist
+                    })))
+                },
+            });
         });
     }
 
