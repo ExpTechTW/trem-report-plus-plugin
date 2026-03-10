@@ -178,6 +178,54 @@ if (toggleButton) {
 const toggleTremButton = document.getElementById('toggle-trem');
 let tremVisible = loadConfig().trem.visible;
 window.tremVisible = tremVisible;
+let currentReportData = null;
+
+function updateTownColors() {
+    const DEFAULT_FILL = '#3F4045';
+    if (!map.getLayer('town')) return;
+
+    if (!currentReportData) {
+        map.setPaintProperty('town', 'fill-color', DEFAULT_FILL);
+        return;
+    }
+
+    const townIntensities = {};
+    if (currentReportData.list) {
+        for (const city of Object.keys(currentReportData.list)) {
+            for (const town of Object.keys(currentReportData.list[city].town)) {
+                const info = currentReportData.list[city].town[town];
+                if (townIntensities[city] === undefined || info.int > townIntensities[city]) {
+                    townIntensities[city] = info.int;
+                }
+            }
+        }
+    }
+
+    if (tremVisible && currentReportData.trem_stations && Array.isArray(currentReportData.trem_stations)) {
+        currentReportData.trem_stations.forEach(station => {
+            const val = window.intensity_float_to_int(station.i);
+            if (station.loc && station.loc.city) {
+                if (townIntensities[station.loc.city] === undefined || val > townIntensities[station.loc.city]) {
+                    townIntensities[station.loc.city] = val;
+                }
+            }
+        });
+    }
+
+    const mapStyle = ['match', ['get', 'COUNTY']];
+    let hasValidCodes = false;
+    Object.entries(townIntensities).forEach(([code, intensity]) => {
+        mapStyle.push(code, INTENSITY_COLORS[intensity] || DEFAULT_FILL);
+        hasValidCodes = true;
+    });
+    mapStyle.push(DEFAULT_FILL);
+
+    if (hasValidCodes) {
+        map.setPaintProperty('town', 'fill-color', mapStyle);
+    } else {
+        map.setPaintProperty('town', 'fill-color', DEFAULT_FILL);
+    }
+}
 
 function updateTremButton() {
     toggleTremButton.innerHTML = tremVisible ? `
@@ -205,13 +253,41 @@ toggleTremButton.addEventListener('click', () => {
 
     if (map.getLayer('report-markers-trem')) map.setLayoutProperty('report-markers-trem', 'visibility', visibility);
     if (map.getLayer('report-markers-trem-station')) map.setLayoutProperty('report-markers-trem-station', 'visibility', visibility);
-    if (map.getLayer('report-markers-trem-station-label')) map.setLayoutProperty('report-markers-trem-station-label', 'visibility', visibility);
     if (tremMarkersPopup) tremMarkersPopup.remove();
     if (tremStationPopup) tremStationPopup.remove();
 
     saveConfig();
     updateTremButton();
+    updateTownColors();
 });
+
+// 1. 動態生成各震度顏色的圓點圖標
+const generateCircleIcon = (id, fillColor, strokeColor) => {
+    const size = 32;
+    const canvas = document.createElement('canvas');
+    canvas.width = size;
+    canvas.height = size;
+    const ctx = canvas.getContext('2d');
+    ctx.beginPath();
+    ctx.arc(16, 16, 14, 0, Math.PI * 2); // 半徑 14
+    ctx.fillStyle = fillColor;
+    ctx.fill();
+    ctx.lineWidth = 1.5;
+    ctx.strokeStyle = strokeColor;
+    ctx.stroke();
+    map.addImage(id, ctx.getImageData(0, 0, size, size));
+};
+
+const INTENSITY_COLORS = {
+    0: '#202020', 1: '#003264', 2: '#0064c8', 3: '#1e9632', 4: '#ffc800',
+    5: '#ff9600', 6: '#ff6400', 7: '#ff0000', 8: '#c00000', 9: '#9600c8'
+};
+
+// 預先產生 CWA(白邊) 與 TREM(黑邊) 的背景圖
+for (let i = 0; i <= 9; i++) {
+    generateCircleIcon(`circle-cwa-${i}`, INTENSITY_COLORS[i] || '#202020', '#ffffff');
+    generateCircleIcon(`circle-trem-${i}`, INTENSITY_COLORS[i] || '#202020', '#000000');
+}
 
 map.on('load', function () {
     const config = loadConfig();
@@ -294,49 +370,58 @@ map.on('load', function () {
         data: { type: 'FeatureCollection', features: [] },
     });
 
-    // 震度圓點 (使用圓形代替圖標以確保相容性)
+    // CWA 測站 (圓點與文字合併)
     map.addLayer({
         id: 'report-markers',
-        type: 'circle',
-        source: 'report-markers-geojson',
-        filter: ['all', ['!=', ['get', 'i'], 0], ['!=', ['get', 'type'], 'trem'], ['!=', ['get', 'type'], 'trem-station']],
-        paint: {
-            'circle-radius': [
-                'interpolate', ['linear'], ['zoom'],
-                5, 8,
-                10, 14
-            ],
-            'circle-color': [
-                'step', ['get', 'i'],
-                '#202020',
-                1, '#003264',
-                2, '#0064c8',
-                3, '#1e9632',
-                4, '#ffc800',
-                5, '#ff9600',
-                6, '#ff6400',
-                7, '#ff0000',
-                8, '#c00000',
-                9, '#9600c8'
-            ],
-            'circle-stroke-width': 1,
-            'circle-stroke-color': '#ffffff'
-        }
-    });
-
-    map.addLayer({
-        id: 'report-markers-label',
         type: 'symbol',
         source: 'report-markers-geojson',
         filter: ['all', ['!=', ['get', 'i'], 0], ['!=', ['get', 'type'], 'trem'], ['!=', ['get', 'type'], 'trem-station']],
         layout: {
+            'icon-image': ['concat', 'circle-cwa-', ['to-string', ['to-number', ['get', 'i']]]],
+            'icon-size': [
+                'interpolate', ['linear'], ['zoom'],
+                5, 8/14,
+                10, 1
+            ],
+            'icon-allow-overlap': true, // 允許重疊
             'text-field': ['to-string', ['get', 'i']],
             'text-size': 12,
-            'text-allow-overlap': true
+            'text-allow-overlap': true, // 允許重疊
+            'symbol-sort-key': ['to-number', ['get', 'i'], 0] // 震度大的永遠畫在最上層
         },
         paint: {
             'text-color': [
-                'step', ['get', 'i'],
+                'step', ['to-number', ['get', 'i']],
+                '#ffffff',
+                4, '#000000',
+                7, '#ffffff'
+            ]
+        }
+    });
+
+    // TREM 測站 (圓點與文字合併)
+    map.addLayer({
+        id: 'report-markers-trem-station',
+        type: 'symbol',
+        source: 'report-markers-geojson',
+        filter: ['==', ['get', 'type'], 'trem-station'],
+        layout: {
+            'visibility': tremVisible ? 'visible' : 'none',
+            'icon-image': ['concat', 'circle-trem-', ['to-string', ['to-number', ['get', 'int']]]],
+            'icon-size': [
+                'interpolate', ['linear'], ['zoom'],
+                5, 8/14,
+                10, 1
+            ],
+            'icon-allow-overlap': true, // 允許重疊
+            'text-field': ['to-string', ['get', 'int']],
+            'text-size': 12,
+            'text-allow-overlap': true, // 允許重疊
+            'symbol-sort-key': ['to-number', ['get', 'int'], 0] // 震度大的永遠畫在最上層
+        },
+        paint: {
+            'text-color': [
+                'step', ['to-number', ['get', 'int']],
                 '#ffffff',
                 4, '#000000',
                 7, '#ffffff'
@@ -387,60 +472,6 @@ map.on('load', function () {
         },
     });
 
-    // TREM 測站
-    map.addLayer({
-        id: 'report-markers-trem-station',
-        type: 'circle',
-        source: 'report-markers-geojson',
-        filter: ['==', ['get', 'type'], 'trem-station'],
-        layout: {
-            'visibility': tremVisible ? 'visible' : 'none',
-        },
-        paint: {
-            'circle-radius': [
-                'interpolate', ['linear'], ['zoom'],
-                5, 8,
-                10, 14
-            ],
-            'circle-color': [
-                'step', ['get', 'int'],
-                '#202020',
-                1, '#003264',
-                2, '#0064c8',
-                3, '#1e9632',
-                4, '#ffc800',
-                5, '#ff9600',
-                6, '#ff6400',
-                7, '#ff0000',
-                8, '#c00000',
-                9, '#9600c8'
-            ],
-            'circle-stroke-width': 1,
-            'circle-stroke-color': '#000000',
-        }
-    });
-
-    map.addLayer({
-        id: 'report-markers-trem-station-label',
-        type: 'symbol',
-        source: 'report-markers-geojson',
-        filter: ['==', ['get', 'type'], 'trem-station'],
-        layout: {
-            'text-field': ['to-string', ['get', 'int']],
-            'text-size': 12,
-            'text-allow-overlap': true,
-            'visibility': tremVisible ? 'visible' : 'none',
-        },
-        paint: {
-            'text-color': [
-                'step', ['get', 'int'],
-                '#ffffff',
-                4, '#000000',
-                7, '#ffffff'
-            ]
-        }
-    });
-
     // Popup 相關事件
     const createPopup = (e, content) => {
         const coordinates = e.features[0].geometry.coordinates.slice();
@@ -471,7 +502,23 @@ map.on('load', function () {
 
     map.on('click', 'report-markers-cross', (e) => {
         const p = e.features[0].properties;
-        map.flyTo({ center: [p.lon, p.lat], zoom: 7.5 });
+        const dataList = map.reportDataList;
+        if (dataList && dataList.length > 0) {
+            const bounds = new maplibregl.LngLatBounds();
+            dataList.forEach(feature => {
+                if (feature.geometry && feature.geometry.type === 'Point' && feature.geometry.coordinates) {
+                    bounds.extend(feature.geometry.coordinates);
+                }
+            });
+
+            if (!bounds.isEmpty()) {
+                map.fitBounds(bounds, { padding: 80, maxZoom: 12 });
+            } else {
+                map.flyTo({ center: [p.lon, p.lat], zoom: 7.5 });
+            }
+        } else {
+            map.flyTo({ center: [p.lon, p.lat], zoom: 7.5 });
+        }
         if (crossMarkersPopup) {
             crossMarkersPopup.remove();
         }
@@ -567,6 +614,7 @@ window.showReportPoint = (data, autoCenter = true) => {
     if (!data || !map.getSource('report-markers-geojson')) {
         return;
     }
+    currentReportData = data;
 
     if (reportMarkersPopup) reportMarkersPopup.remove();
     if (crossMarkersPopup) crossMarkersPopup.remove();
@@ -599,12 +647,46 @@ window.showReportPoint = (data, autoCenter = true) => {
     let max_trem_dist = Infinity;
     let max_loc = null;
     let max_trem_loc = null;
+    let region = require('../resource/data/region.json');
 
     // 處理震度分佈 (data.list 結構: city -> town -> info)
     if (data.list) {
         for (const city of Object.keys(data.list)) {
             for (const town of Object.keys(data.list[city].town)) {
                 const info = data.list[city].town[town];
+                let code = null;
+                if (region[city]) {
+                    // 1. Direct match
+                    if (region[city][town]) {
+                        code = region[city][town].code;
+                    } else {
+                        // 2. Partial name match (e.g., "二林" vs "二林鎮")
+                        const partialMatches = Object.keys(region[city]).filter(regionTown => regionTown.startsWith(town));
+                        if (partialMatches.length === 1) {
+                            code = region[city][partialMatches[0]].code;
+                        }
+                    }
+
+                    // 3. Geolocation match if no name match found
+                    if (!code && info.lat && info.lon) {
+                        let minDistance = Infinity;
+                        let bestMatchCode = null;
+                        const townCoords = { lat: info.lat, lon: info.lon };
+
+                        for (const regionTownName in region[city]) {
+                            const regionTownInfo = region[city][regionTownName];
+                            if (regionTownInfo.lat && regionTownInfo.lon) {
+                                const distance = twoPointDistance(townCoords, { lat: regionTownInfo.lat, lon: regionTownInfo.lon });
+                                if (distance < minDistance) {
+                                    minDistance = distance;
+                                    bestMatchCode = regionTownInfo.code;
+                                }
+                            }
+                        }
+                        // Use the closest town's code.
+                        code = bestMatchCode;
+                    }
+                }
                 let dist = 0;
                 let distNum = Infinity;
                 if (data.lat && data.lon) {
@@ -743,6 +825,8 @@ window.showReportPoint = (data, autoCenter = true) => {
         });
     }
 
+    updateTownColors();
+
     // 處理震央
     if (data.lon && data.lat) {
         dataList.push({
@@ -763,13 +847,32 @@ window.showReportPoint = (data, autoCenter = true) => {
                 max_trem_loc: max_trem_loc ? `${max_trem_loc.city} ${max_trem_loc.town}` : "不明",
             },
         });
-        if (autoCenter) {
-            map.flyTo({ center: [data.lon, data.lat], zoom: 7.5 });
+    }
+
+    if (autoCenter && dataList.length > 0) {
+        const bounds = new maplibregl.LngLatBounds();
+        dataList.forEach(feature => {
+            if (feature.geometry && feature.geometry.type === 'Point' && feature.geometry.coordinates) {
+                bounds.extend(feature.geometry.coordinates);
+            }
+        });
+
+        if (!bounds.isEmpty()) {
+            const sw = bounds.getSouthWest();
+            const ne = bounds.getNorthEast();
+            if (sw.lng === ne.lng && sw.lat === ne.lat) {
+                map.flyTo({ center: sw, zoom: 10 });
+            } else {
+                map.fitBounds(bounds, { padding: 80, maxZoom: 12 });
+            }
         }
+    } else if (autoCenter && data.lon && data.lat) {
+        map.flyTo({ center: [data.lon, data.lat], zoom: 7.5 });
     }
 
     map.getSource('report-markers-geojson').setData({
         type: 'FeatureCollection',
         features: dataList,
     });
+    map.reportDataList = dataList;
 }

@@ -278,6 +278,7 @@ async function fetchTremData() {
                                 lon: info.lon,
                                 loc: search_loc_name(info.code),
                                 net: s.net,
+                                code: info.code,
                             };
                         }).filter((e) => e);
                     }
@@ -316,7 +317,9 @@ async function showReport(report, autoCenter = true) {
             window.showReportPoint(report, autoCenter);
         }
     } catch (e) {
-        console.error(e);
+        if (e.message !== 'Request cancelled') {
+            console.error(e);
+        }
     }
 }
 
